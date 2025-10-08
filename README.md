@@ -1,84 +1,69 @@
-# README.md
-
-## FFmpeg 8.0 (CUDA-enabled Whisper filter) in a slim, two-stage Docker image
-
-This repo builds **FFmpeg 8.0** with a large set of codecs/filters and the **Whisper** audio-to-text filter accelerated by **GGML CUDA** (from `whisper.cpp`).
-The final runtime image contains only `ffmpeg`, `ffprobe`, and the libs they actually need.
-
-### Highlights
-
-* **Whisper filter** (`-af whisper=…`) from `whisper.cpp v1.8.0` (CUDA build).
-* **NVIDIA NVENC/NVDEC** (via `--enable-ffnvcodec` + `nv-codec-headers`) for fast GPU transcoding.
-* **Intel VAAPI** enabled for hardware decode/encode on iGPUs.
-* TLS via **GnuTLS** (no OpenSSL → stays redistributable under GPL).
-* Packaged runtime is ~**1.5 GB** (varies), with CUDA driver libs excluded (use host injection).
+Here you go — an updated, ready-to-drop-in `README.md` that reflects the **GnuTLS (redistributable) licensing change** and **no Vulkan**. It also calls out hardware transcoding support and the main features you enabled.
 
 ---
 
-## What’s built in (selected `./configure` flags)
+# FFmpeg 8.0 (GPU + Whisper) — Docker build
 
-**Hardware accel**
+This repository builds a feature-rich **FFmpeg 8.0** container with:
 
-* `--enable-ffnvcodec` (NVENC/NVDEC)
-* `--enable-vaapi`
-* `--enable-opencl` (with ICD headers)
-* `--enable-sdl2` (for dev/playback utilities)
+* **Hardware transcoding**
 
-**AI / ASR**
+  * **NVIDIA NVENC/NVDEC** (`--enable-ffnvcodec`) + CUDA LLVM toolchain
+  * **Intel VAAPI** and **oneVPL** (`--enable-vaapi`, `--enable-libvpl`)
+* **Whisper** speech-to-text audio filter (`--enable-whisper`, via **whisper.cpp**)
+* A broad set of codecs, demuxers, filters, and protocols (see below)
+* **Redistributable licensing**: uses **GnuTLS** (not OpenSSL) so there’s **no `--enable-nonfree`**; the final binary can be distributed under the GPL
 
-* `--enable-whisper` (uses `whisper.cpp` – GGML CUDA backend)
+The final image is **slim**: only `ffmpeg`, `ffprobe`, and the exact shared libraries they need are included.
 
-**Video codecs**
-
-* `--enable-libaom` (AV1), `--enable-libsvtav1`, `--enable-libvpx` (VP8/9)
-* `--enable-libx264`, `--enable-libx265`, `--enable-libxvid`
-* `--enable-libopenh264`, `--enable-libopenjpeg` (JPEG2000)
-* `--enable-libaribb24` (ARIB captions), `--enable-libdav1d` (AV1), `--enable-libdavs2`, `--enable-libxavs2`
-
-**Audio codecs**
-
-* `--enable-libmp3lame`, `--enable-libopus`, `--enable-libvorbis`, `--enable-libtwolame`, `--enable-libspeex`
-* `--enable-libopencore-amrnb`, `--enable-libopencore-amrwb`
-
-**Filters / Fonts / Subtitles**
-
-* `--enable-libass`, `--enable-libfreetype`, `--enable-libfribidi`, `--enable-libharfbuzz`
-* `--enable-frei0r`, `--enable-libsoxr`, `--enable-libsnappy`, `--enable-libzimg`, `--enable-libvidstab`
-
-**Containers / misc**
-
-* `--enable-libbluray`, `--enable-libdvdnav`, `--enable-libdvdread`
-* `--enable-chromaprint`, `--enable-gnutls`, `--enable-lzma`, `--enable-zlib`
-* `--enable-version3` and `--enable-gpl`
-
-> Not included by design: **OpenSSL** (we use GnuTLS for clean GPL distribution), **Vulkan** (unset), **fdk-aac** (kept out to avoid `--enable-nonfree`).
+> ⚠️ **Vulkan is not enabled** in this build. If you want Vulkan/libplacebo later, you’ll need to add the relevant dev packages and `--enable-vulkan` (and typically `--enable-libplacebo`, `--enable-libshaderc`) to your configure flags.
 
 ---
 
-## Host prerequisites (runtime)
+## What’s inside (enabled features)
 
-### NVIDIA (recommended for NVENC/NVDEC)
+### Video encoders/decoders
 
-* Install **NVIDIA Container Toolkit** on the host.
-* Run containers with GPU access: `--gpus all`.
-* Example:
+* **AV1**: `libaom` (enc/dec), `librav1e` (enc), `libsvtav1` (enc), `libdav1d` (dec)
+* **H.264 / H.265**: `libx264`, `libx265`, **NVENC** (e.g., `h264_nvenc`, `hevc_nvenc`)
+* **VP8/VP9**: `libvpx`
+* **AVS2**: `libdavs2` (dec), `libxavs2` (enc)
+* **MPEG-4 ASP**: `libxvid`
+* **Theora**: `libtheora`
+* **OpenH264**: `libopenh264`
+* **JPEG 2000**: `libopenjpeg`
+* **WebP / JPEG XL**: `libwebp`, `libjxl`
 
-  ```bash
-  docker run --rm --gpus all ffmpeg-gpu-whisper:8.0 \
-    ffmpeg -hwaccel cuda -i in.mp4 -c:v h264_nvenc out.mp4
-  ```
+### Audio encoders/decoders & DSP
 
-### Intel VAAPI
+* **AAC (native)**, **MP3** (`libmp3lame`), **Opus** (`libopus`)
+* **Vorbis** (`libvorbis`), **Speex** (`libspeex`), **AMR-NB/AMR-WB** (`opencore-amr`)
+* **MP2** (`twolame`)
+* **SoX Resampler** (`libsoxr`), **Rubber Band** (time-stretch), **Game Music** (`libgme`)
 
-* Linux host with `/dev/dri` exposed to the container:
+### Subtitles, text & filters
 
-  ```bash
-  docker run --rm --device /dev/dri:/dev/dri ffmpeg-gpu-whisper:8.0 \
-    ffmpeg -hwaccel vaapi -vaapi_device /dev/dri/renderD128 \
-           -i in.mp4 -vf 'format=nv12,hwupload' -c:v h264_vaapi out.mp4
-  ```
+* **Whisper** audio-to-text filter (`--enable-whisper`)
+* **Subtitles/text**: `libass`, `freetype`, `fontconfig`, `harfbuzz`, `fribidi`
+* **Stabilization**: `libvidstab`
+* **Frei0r** effects
+* **ARIB B-24** captions (`libaribb24`)
+* **Chromaprint** (acoustic fingerprinting)
 
-> On Windows (Docker Desktop), NVIDIA works via WSL2 + GPU support. For VAAPI, use a Linux host.
+### Protocols / I/O / misc
+
+* **SRT (GnuTLS build)**, **RIST**, **SSH**, **ZeroMQ**
+* **SDL2**, **OpenAL**
+* **Bluray/DVD** nav: `libbluray`, `libdvdnav`, `libdvdread`
+* **GnuTLS** for TLS/HTTPS, **Zlib**, **LZMA**
+
+### GPU stacks
+
+* **NVIDIA**: NVENC/NVDEC headers (`nv-codec-headers`) + CUDA LLVM
+* **Intel**: **VAAPI** + **oneVPL** (`libvpl`)
+* **OpenCL** is enabled; **Vulkan is not** (by design in this build)
+
+> The image also includes **AviSynth+ headers only** (no AvsCore build), which is sufficient for `--enable-avisynth`.
 
 ---
 
