@@ -1,345 +1,243 @@
-Here you go — an updated, ready-to-drop-in `README.md` that reflects the **GnuTLS (redistributable) licensing change** and **no Vulkan**. It also calls out hardware transcoding support and the main features you enabled.
+# README.md
+
+## FFmpeg 8.0 (CUDA-enabled Whisper filter) in a slim, two-stage Docker image
+
+This repo builds **FFmpeg 8.0** with a large set of codecs/filters and the **Whisper** audio-to-text filter accelerated by **GGML CUDA** (from `whisper.cpp`).
+The final runtime image contains only `ffmpeg`, `ffprobe`, and the libs they actually need.
+
+### Highlights
+
+* **Whisper filter** (`-af whisper=…`) from `whisper.cpp v1.8.0` (CUDA build).
+* **NVIDIA NVENC/NVDEC** (via `--enable-ffnvcodec` + `nv-codec-headers`) for fast GPU transcoding.
+* **Intel VAAPI** enabled for hardware decode/encode on iGPUs.
+* TLS via **GnuTLS** (no OpenSSL → stays redistributable under GPL).
+* Packaged runtime is ~**1.5 GB** (varies), with CUDA driver libs excluded (use host injection).
 
 ---
 
-# FFmpeg 8.0 (GPU + Whisper) — Docker build
+## What’s built in (selected `./configure` flags)
 
-This repository builds a feature-rich **FFmpeg 8.0** container with:
+**Hardware accel**
 
-* **Hardware transcoding**
+* `--enable-ffnvcodec` (NVENC/NVDEC)
+* `--enable-vaapi`
+* `--enable-opencl` (with ICD headers)
+* `--enable-sdl2` (for dev/playback utilities)
 
-  * **NVIDIA NVENC/NVDEC** (`--enable-ffnvcodec`) + CUDA LLVM toolchain
-  * **Intel VAAPI** and **oneVPL** (`--enable-vaapi`, `--enable-libvpl`)
-* **Whisper** speech-to-text audio filter (`--enable-whisper`, via **whisper.cpp**)
-* A broad set of codecs, demuxers, filters, and protocols (see below)
-* **Redistributable licensing**: uses **GnuTLS** (not OpenSSL) so there’s **no `--enable-nonfree`**; the final binary can be distributed under the GPL
+**AI / ASR**
 
-The final image is **slim**: only `ffmpeg`, `ffprobe`, and the exact shared libraries they need are included.
+* `--enable-whisper` (uses `whisper.cpp` – GGML CUDA backend)
 
-> ⚠️ **Vulkan is not enabled** in this build. If you want Vulkan/libplacebo later, you’ll need to add the relevant dev packages and `--enable-vulkan` (and typically `--enable-libplacebo`, `--enable-libshaderc`) to your configure flags.
+**Video codecs**
+
+* `--enable-libaom` (AV1), `--enable-libsvtav1`, `--enable-libvpx` (VP8/9)
+* `--enable-libx264`, `--enable-libx265`, `--enable-libxvid`
+* `--enable-libopenh264`, `--enable-libopenjpeg` (JPEG2000)
+* `--enable-libaribb24` (ARIB captions), `--enable-libdav1d` (AV1), `--enable-libdavs2`, `--enable-libxavs2`
+
+**Audio codecs**
+
+* `--enable-libmp3lame`, `--enable-libopus`, `--enable-libvorbis`, `--enable-libtwolame`, `--enable-libspeex`
+* `--enable-libopencore-amrnb`, `--enable-libopencore-amrwb`
+
+**Filters / Fonts / Subtitles**
+
+* `--enable-libass`, `--enable-libfreetype`, `--enable-libfribidi`, `--enable-libharfbuzz`
+* `--enable-frei0r`, `--enable-libsoxr`, `--enable-libsnappy`, `--enable-libzimg`, `--enable-libvidstab`
+
+**Containers / misc**
+
+* `--enable-libbluray`, `--enable-libdvdnav`, `--enable-libdvdread`
+* `--enable-chromaprint`, `--enable-gnutls`, `--enable-lzma`, `--enable-zlib`
+* `--enable-version3` and `--enable-gpl`
+
+> Not included by design: **OpenSSL** (we use GnuTLS for clean GPL distribution), **Vulkan** (unset), **fdk-aac** (kept out to avoid `--enable-nonfree`).
 
 ---
 
-## What’s inside (enabled features)
+## Host prerequisites (runtime)
 
-### Video encoders/decoders
+### NVIDIA (recommended for NVENC/NVDEC)
 
-* **AV1**: `libaom` (enc/dec), `librav1e` (enc), `libsvtav1` (enc), `libdav1d` (dec)
-* **H.264 / H.265**: `libx264`, `libx265`, **NVENC** (e.g., `h264_nvenc`, `hevc_nvenc`)
-* **VP8/VP9**: `libvpx`
-* **AVS2**: `libdavs2` (dec), `libxavs2` (enc)
-* **MPEG-4 ASP**: `libxvid`
-* **Theora**: `libtheora`
-* **OpenH264**: `libopenh264`
-* **JPEG 2000**: `libopenjpeg`
-* **WebP / JPEG XL**: `libwebp`, `libjxl`
+* Install **NVIDIA Container Toolkit** on the host.
+* Run containers with GPU access: `--gpus all`.
+* Example:
 
-### Audio encoders/decoders & DSP
+  ```bash
+  docker run --rm --gpus all ffmpeg-gpu-whisper:8.0 \
+    ffmpeg -hwaccel cuda -i in.mp4 -c:v h264_nvenc out.mp4
+  ```
 
-* **AAC (native)**, **MP3** (`libmp3lame`), **Opus** (`libopus`)
-* **Vorbis** (`libvorbis`), **Speex** (`libspeex`), **AMR-NB/AMR-WB** (`opencore-amr`)
-* **MP2** (`twolame`)
-* **SoX Resampler** (`libsoxr`), **Rubber Band** (time-stretch), **Game Music** (`libgme`)
+### Intel VAAPI
 
-### Subtitles, text & filters
+* Linux host with `/dev/dri` exposed to the container:
 
-* **Whisper** audio-to-text filter (`--enable-whisper`)
-* **Subtitles/text**: `libass`, `freetype`, `fontconfig`, `harfbuzz`, `fribidi`
-* **Stabilization**: `libvidstab`
-* **Frei0r** effects
-* **ARIB B-24** captions (`libaribb24`)
-* **Chromaprint** (acoustic fingerprinting)
+  ```bash
+  docker run --rm --device /dev/dri:/dev/dri ffmpeg-gpu-whisper:8.0 \
+    ffmpeg -hwaccel vaapi -vaapi_device /dev/dri/renderD128 \
+           -i in.mp4 -vf 'format=nv12,hwupload' -c:v h264_vaapi out.mp4
+  ```
 
-### Protocols / I/O / misc
-
-* **SRT (GnuTLS build)**, **RIST**, **SSH**, **ZeroMQ**
-* **SDL2**, **OpenAL**
-* **Bluray/DVD** nav: `libbluray`, `libdvdnav`, `libdvdread`
-* **GnuTLS** for TLS/HTTPS, **Zlib**, **LZMA**
-
-### GPU stacks
-
-* **NVIDIA**: NVENC/NVDEC headers (`nv-codec-headers`) + CUDA LLVM
-* **Intel**: **VAAPI** + **oneVPL** (`libvpl`)
-* **OpenCL** is enabled; **Vulkan is not** (by design in this build)
-
-> The image also includes **AviSynth+ headers only** (no AvsCore build), which is sufficient for `--enable-avisynth`.
+> On Windows (Docker Desktop), NVIDIA works via WSL2 + GPU support. For VAAPI, use a Linux host.
 
 ---
 
 ## Build
 
-**Prerequisites**
+### Linux/macOS
 
-* Docker Desktop / Docker Engine
-* On Windows, build from a **WSL2** shell and keep the repo in the Linux filesystem for speed.
+```bash
+export DOCKER_BUILDKIT=1
+docker buildx build \
+  --build-arg FFMPEG_VER=8.0 \
+  --build-arg AVS_TAG=v3.7.5 \
+  --build-arg WHISPER_TAG=v1.8.0 \
+  --build-arg CUDAARCHS=86 \
+  -t ffmpeg-gpu-whisper:8.0 .
+```
 
-**Build (PowerShell)**
+### PowerShell (Windows)
 
 ```powershell
 $env:DOCKER_BUILDKIT="1"
 docker buildx build `
   --build-arg FFMPEG_VER=8.0 `
-  --build-arg CUDAARCHS=75;86;89 `
-  --build-arg AVS_TAG=v3.7.3 `
-  --progress=plain `
+  --build-arg AVS_TAG=v3.7.5 `
+  --build-arg WHISPER_TAG=v1.8.0 `
+  --build-arg CUDAARCHS=86 `
   -t ffmpeg-gpu-whisper:8.0 .
 ```
 
-**Notes**
-
-* Set `CUDAARCHS` to your target GPU SM(s) to speed up whisper.cpp and reduce binary size (e.g., `86` for RTX 30-series; `89` for RTX 40-series).
-* Whisper **models are not required at build time**; mount/copy them at runtime.
-
 ---
 
-## Run
+## Using the Whisper wrapper (`extract_subs.sh`)
 
-### NVIDIA GPU (NVENC/NVDEC)
+This repo includes a small wrapper that runs FFmpeg with the Whisper audio filter to extract **SRT subtitles** next to your media file.
 
-Make sure the host has the NVIDIA driver + **NVIDIA Container Toolkit**.
+### Script
 
-```bash
-docker run --rm -it --gpus all ffmpeg-gpu-whisper:8.0 \
-  ffmpeg -hide_banner \
-         -hwaccel cuda -hwaccel_output_format cuda \
-         -i input.mp4 -c:v h264_nvenc -preset p5 -cq 23 -c:a copy out.mp4
+```sh
+#!/bin/sh
+# extract_subs.sh  —  wrapper for the FFmpeg Whisper filter
+# Usage:
+#   extract_subs.sh "<inputfile>" "<modelpath>"
+# Example:
+#   extract_subs.sh "/path/to/Movie (2024).mkv" "/models/ggml-large-v3-turbo.bin"
+
+set -eu
+
+inputfile="$1"
+modelpath="$2"
+
+if [ -z "$inputfile" ] || [ -z "$modelpath" ]; then
+  echo "Usage: $0 <inputfile> <modelpath>" >&2
+  exit 1
+fi
+
+inputdir=$(dirname "$inputfile")
+filename=$(basename "$inputfile")
+filename_noext="${filename%.*}"
+
+cd "$inputdir"
+outputfile="${filename_noext}.srt"
+
+echo "Running Whisper → ${outputfile}"
+ffmpeg -i "$inputfile" -vn \
+  -af "whisper=model=${modelpath}:language=en:queue=5:destination=${outputfile}:format=srt" \
+  -f null -
 ```
 
-### Intel iGPU (VAAPI)
+### Add the wrapper into the image
 
-Expose the VAAPI device:
-
-```bash
-docker run --rm -it --device /dev/dri:/dev/dri ffmpeg-gpu-whisper:8.0 \
-  ffmpeg -hide_banner \
-         -hwaccel vaapi -vaapi_device /dev/dri/renderD128 \
-         -i input.mp4 -vf 'format=nv12,hwupload' \
-         -c:v h264_vaapi -b:v 5M out.mp4
-```
-
-### Whisper filter (speech-to-text)
-
-Mount your Whisper model and run the filter:
-
-```bash
-docker run --rm -it -v "$PWD/models:/models" ffmpeg-gpu-whisper:8.0 \
-  ffmpeg -hide_banner -i speech.wav \
-         -af "whisper=model=/models/ggml-base.en.bin" -f null -
-```
-
----
-
-## Verify features
-
-```bash
-docker run --rm ffmpeg-gpu-whisper:8.0 ffmpeg -hide_banner -buildconf | sed -n '1,160p'
-docker run --rm ffmpeg-gpu-whisper:8.0 ffmpeg -hide_banner -hwaccels
-docker run --rm ffmpeg-gpu-whisper:8.0 ffmpeg -hide_banner -encoders  | grep -E 'nvenc|vaapi|svt|rav1e|x26'
-docker run --rm ffmpeg-gpu-whisper:8.0 ffmpeg -hide_banner -filters   | grep whisper
-```
-
----
-
-## Image layout
-
-The runtime image unpacks to:
-
-```
-/opt/bin/ffmpeg
-/opt/bin/ffprobe
-/opt/lib/...         # .so dependency closure
-/usr/local/bin/{ffmpeg,ffprobe} -> symlinks to /opt/bin
-```
-
-This repo registers loader search paths under `/etc/ld.so.conf` to match the preserved directory structure in `/opt/lib`.
-If you’d prefer a single directory, adjust the packaging step to copy libs **flat** into `/opt/ffmpeg/lib` and replace the loader config with:
+In the **runtime** stage of your Dockerfile, add:
 
 ```dockerfile
-RUN echo "/opt/ffmpeg/lib" > /etc/ld.so.conf.d/ffmpeg.conf && ldconfig
+# Bundle the wrapper
+COPY extract_subs.sh /usr/local/bin/extract_subs.sh
+RUN chmod +x /usr/local/bin/extract_subs.sh
+```
+
+### Run it (Linux)
+
+```bash
+docker run --rm --gpus all \
+  -v /path/to/videos:/videos \
+  -v /path/to/models:/models \
+  ffmpeg-gpu-whisper:8.0 \
+  extract_subs.sh "/videos/Movie (2024).mkv" "/models/ggml-large-v3-turbo.bin"
+```
+
+### Run it (PowerShell on Windows)
+
+```powershell
+docker run --rm --gpus all `
+  -v "D:\Videos:/videos" `
+  -v "D:\Models:/models" `
+  ffmpeg-gpu-whisper:8.0 `
+  extract_subs.sh "/videos/Movie (2024).mkv" "/models/ggml-large-v3-turbo.bin"
+```
+
+> Notes
+>
+> * The model path must be readable in the container (bind-mount your models directory).
+> * You can change `language=en` to `language=auto` to auto-detect.
+> * `queue=5` tunes the filter’s worker queue (increase on bigger GPUs).
+
+---
+
+## Examples
+
+**Transcode with NVENC (NVIDIA):**
+
+```bash
+docker run --rm --gpus all -v "$PWD:/work" ffmpeg-gpu-whisper:8.0 \
+  ffmpeg -hwaccel cuda -i /work/in.mp4 -c:v h264_nvenc -b:v 5M -c:a aac /work/out.mp4
+```
+
+**Extract subtitles only (wrapper):**
+
+```bash
+docker run --rm --gpus all \
+  -v "$PWD:/work" -v "$HOME/models:/models" ffmpeg-gpu-whisper:8.0 \
+  extract_subs.sh "/work/in.mp3" "/models/ggml-large-v3-turbo.bin"
 ```
 
 ---
 
-## Licensing
+## Runtime expectations
 
-* This build uses **GnuTLS** (not OpenSSL), so **no `--enable-nonfree`** is required.
-* The resulting binaries are **redistributable** under the **GPL** (you already pass `--enable-gpl` and `--enable-version3`).
-* If you later switch back to **OpenSSL** (`--enable-openssl`), you’ll need **`--enable-nonfree`** and **must not redistribute** the binaries/images.
-* Some libraries are GPL, some LGPL/Apache-2.0/MIT, etc. By building FFmpeg with `--enable-gpl --enable-version3`, you’re distributing the combined work under **GPLv3** terms.
-
-> Not legal advice; review your dependency set before publishing artifacts.
+* **CUDA driver libs** (`libcuda.so.1`, `libcudart.so.12`, `libcublas.so.12`, …) are **not** shipped in the runtime image; they come from the **host** (via `--gpus all`).
+* `ffmpeg` / `ffprobe` are patched with an **RPATH** to load `/opt/ffmpeg/lib`, and the runtime sets `/etc/ld.so.conf.d/ffmpeg.conf` to the same path.
 
 ---
 
 ## Troubleshooting
 
-* **SRT dev conflict**: `libsrt-gnutls-dev` and `libsrt-openssl-dev` conflict. Install **only one** (this build uses **GnuTLS**).
-* **AviSynth+ headers-only**: pin a tag (e.g., `AVS_TAG=v3.7.3`) so CMake’s `VersionGen` works; build with `-DHEADERS_ONLY=ON`.
-* **Windows/WSL2 performance**: build from the **WSL2** side and keep sources in the Linux filesystem; enable BuildKit cache mounts and **ccache**.
-* **NVIDIA runtime**: you still need host drivers and `--gpus all` (or equivalent) at `docker run` time.
+* `ERROR: whisper >= 1.7.5 not found using pkg-config` during build
+  Ensure the builder stage installs **nvidia-cuda-toolkit** (and optionally `nvidia-cuda-dev`). The FFmpeg configure probe links against `libggml-cuda.so` and needs CUDA libs present at **build time**.
+
+* `libcuda.so.1 not found` at runtime
+  Run with `--gpus all` and have the NVIDIA drivers/toolkit installed on the host.
+
+* VAAPI not working
+  Pass through the device: `--device /dev/dri:/dev/dri` and ensure the user has permission to access `/dev/dri/renderD128` on the host.
 
 ---
 
-## Customization
+## License
 
-* `FFMPEG_VER` — pick another FFmpeg release.
-* `CUDAARCHS` — set specific SMs (e.g., `86`).
-* `AVS_TAG` — pin AviSynth+ headers to a specific release.
-
-
-Great call. Here’s a **drop-in README section** you can paste under “Run” (or right after “Build”). It covers **host setup** for both **NVIDIA (NVENC/NVDEC)** and **Intel VAAPI/oneVPL**, with quick verification and container run examples.
+* FFmpeg is built with **GPL** options and **GnuTLS** (no OpenSSL; no nonfree).
+* This repo contains no FFmpeg source; it fetches official releases and builds against distro-provided libraries.
+* Non-commercial, attribution JpSoftworks Inc. (Quebec Canada)
 
 ---
 
-## Host GPU Runtime Requirements
+### Optional: verify build
 
-Your container already has the right userspace bits. For **hardware transcoding**, the **host** must expose a working GPU runtime.
-
-### NVIDIA (NVENC/NVDEC)
-
-**Linux hosts (Ubuntu/Debian)**
-
-1. Install the proprietary NVIDIA **driver** (from your distro or NVIDIA). Reboot if you just installed it.
-   Verify:
-
-   ```bash
-   nvidia-smi
-   ```
-
-   You should see your GPU and driver version.
-
-2. Install **NVIDIA Container Toolkit** so Docker can pass the GPU through:
-
-   ```bash
-   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit.gpg
-   curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit.gpg] https://#' \
-     | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list > /dev/null
-
-   sudo apt-get update
-   sudo apt-get install -y nvidia-container-toolkit
-   sudo nvidia-ctk runtime configure
-   sudo systemctl restart docker
-   ```
-
-3. Quick test (pulls a CUDA base and runs `nvidia-smi` inside):
-
-   ```bash
-   docker run --rm --gpus all nvidia/cuda:12.5.0-base-ubuntu24.04 nvidia-smi
-   ```
-
-4. Run this image with NVENC/NVDEC enabled:
-
-   ```bash
-   docker run --rm -it --gpus all ffmpeg-gpu-whisper:8.0 \
-     ffmpeg -hide_banner \
-            -hwaccel cuda -hwaccel_output_format cuda \
-            -i input.mp4 -c:v h264_nvenc -preset p5 -cq 23 -c:a copy out.mp4
-   ```
-
-   Tips:
-
-   * You can be explicit (not required) with `-e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=video,compute,utility`.
-   * NVENC session limits are enforced by the driver/firmware; multiple encodes may require a datacenter-class GPU.
-
-**Windows + Docker Desktop (WSL2 backend)**
-
-* Install a recent **NVIDIA Windows driver** (supports WSL2 GPU).
-* Ensure **Docker Desktop uses WSL2** (Settings → General → “Use the WSL 2 based engine”).
-* From a **WSL2 shell**, verify:
-
-  ```bash
-  docker run --rm --gpus all nvidia/cuda:12.5.0-base-ubuntu24.04 nvidia-smi
-  ```
-* Then run NVENC as shown above. (On Windows, VAAPI is not reliably exposed—prefer NVIDIA here.)
-
----
-
-### Intel iGPU (VAAPI / oneVPL)
-
-**Linux hosts only** (recommended path for Intel iGPU)
-
-1. Enable iGPU in BIOS and ensure the kernel driver `i915` is loaded:
-
-   ```bash
-   lsmod | grep i915 || echo "i915 not loaded"
-   ```
-
-2. Install the **Intel Media VAAPI driver** and tools:
-
-   ```bash
-   sudo apt-get update
-   sudo apt-get install -y intel-media-va-driver-non-free libva2 vainfo
-   # (For very old GPUs: i965-va-driver instead of intel-media-va-driver-non-free)
-   ```
-
-3. Verify VAAPI on the **host**:
-
-   ```bash
-   vainfo | grep -E 'Driver version|Supported profile'
-   ```
-
-4. Run the container with the **DRI device passed through**:
-
-   ```bash
-   docker run --rm -it --device /dev/dri:/dev/dri ffmpeg-gpu-whisper:8.0 \
-     ffmpeg -hide_banner \
-            -hwaccel vaapi -vaapi_device /dev/dri/renderD128 \
-            -i input.mp4 -vf 'format=nv12,hwupload' \
-            -c:v h264_vaapi -b:v 5M out.mp4
-   ```
-
-   Notes:
-
-   * Some setups expose `/dev/dri/card0` and `/dev/dri/renderD128`. The **render** node is what FFmpeg typically needs.
-   * Make sure the user running Docker has permissions for `/dev/dri` (or just pass the device as above).
-
-**Windows hosts / WSL2**
-
-* VAAPI passthrough isn’t consistently supported under WSL2/Docker Desktop today. For Intel hardware acceleration, prefer running on a native Linux host.
-
----
-
-### Whisper filter (any host)
-
-You don’t need special host GPU steps for the Whisper filter beyond the NVIDIA/Intel runtime above (if you want GPU acceleration for whisper.cpp). At **runtime**, mount your model file(s):
+Inside the container:
 
 ```bash
-docker run --rm -it -v "$PWD/models:/models" ffmpeg-gpu-whisper:8.0 \
-  ffmpeg -hide_banner -i speech.wav \
-         -af "whisper=model=/models/ggml-base.en.bin" -f null -
+ffmpeg -hide_banner -buildconf | sed -n '1,120p'
+ffmpeg -filters | grep -i whisper || true
+ffmpeg -hwaccels
 ```
-
----
-
-### Troubleshooting quick checks
-
-* **NVENC not listed** in encoders:
-
-  ```bash
-  docker run --rm --gpus all ffmpeg-gpu-whisper:8.0 ffmpeg -hide_banner -encoders | grep -i nvenc
-  ```
-
-  If empty: check `nvidia-smi` in a GPU container, verify container toolkit is configured, and that your GPU supports NVENC.
-
-* **VAAPI fails** (`Device not found` / `invalid drm node`):
-
-  * Confirm `/dev/dri/renderD128` exists on the host.
-  * Try passing only the render node:
-
-    ```bash
-    --device /dev/dri/renderD128:/dev/dri/renderD128
-    ```
-  * Confirm `vainfo` works on the host.
-
-* **Permissions**: If you see “Permission denied” on `/dev/dri/*`, try:
-
-  ```bash
-  docker run --rm -it --device /dev/dri --group-add video ffmpeg-gpu-whisper:8.0 ...
-  ```
-
----
-
-If you want, I can fold this into your README and push a “Host GPU Setup” section directly after the Run section, or generate a one-page “GPU Quickstart” you can link from the repo.
-

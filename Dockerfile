@@ -7,6 +7,7 @@ FROM ubuntu:24.04 AS base-tools
 ARG DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash","-euxo","pipefail","-c"]
 
+# Stable toolchain only; keep this layer unchanged to maximize cache hits
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache \
     rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock || true \
  && mkdir -p /var/lib/apt/lists/partial /var/cache/apt/archives/partial \
@@ -40,10 +41,10 @@ RUN git clone --depth=1 --branch ${AVS_TAG} https://github.com/AviSynth/AviSynth
 # whisper: libwhisper/ggml (CUDA) → staged install (tagged & canonical libdir)
 ############################
 FROM base-tools AS whisper
-ARG CUDAARCHS=86                    
-ARG WHISPER_TAG=v1.8.0            
+ARG CUDAARCHS=86
+ARG WHISPER_TAG=v1.8.0
 
-# CUDA toolchain for GGML CUDA
+# CUDA toolchain (for building libwhisper + libggml-cuda)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache \
     apt-get update && apt-get install -y --no-install-recommends nvidia-cuda-toolkit \
  && rm -rf /var/lib/apt/lists/*
@@ -55,15 +56,14 @@ RUN git clone --depth=1 --branch ${WHISPER_TAG} https://github.com/ggml-org/whis
       -DCMAKE_CUDA_ARCHITECTURES="${CUDAARCHS}" \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/usr \
-      -DCMAKE_INSTALL_LIBDIR=lib \           
-      -DCMAKE_INSTALL_INCLUDEDIR=include \   
+      -DCMAKE_INSTALL_LIBDIR=lib \
+      -DCMAKE_INSTALL_INCLUDEDIR=include \
       -DCMAKE_C_COMPILER_LAUNCHER=ccache \
       -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
  && cmake --build build -j"$(nproc)" \
  && DESTDIR=/opt/stage cmake --install build \
  && PKG_CONFIG_PATH=/opt/stage/usr/lib/pkgconfig:/opt/stage/usr/lib/x86_64-linux-gnu/pkgconfig \
     pkg-config --print-errors --modversion whisper
-
 
 ############################
 # ffmpeg-deps: all -dev headers your flags rely on (keep as a superset)
@@ -85,7 +85,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache \
       libdavs2-dev libopencore-amrnb-dev libopencore-amrwb-dev libopenh264-dev librubberband-dev \
       liblilv-dev lv2-dev libxavs2-dev \
       libsdl2-dev libopenal-dev \
-    && rm -rf /var/lib/apt/lists/*
+ && rm -rf /var/lib/apt/lists/*
 
 ############################
 # builder: bring artifacts + deps, then build FFmpeg
@@ -94,14 +94,22 @@ FROM ffmpeg-deps AS builder
 ARG FFMPEG_VER=8.0
 WORKDIR /
 
+# Bring staged artifacts into / (so pkg-config finds them)
 COPY --from=nvcodec  /opt/stage/ /
 COPY --from=avisynth /opt/stage/ /
 COPY --from=whisper  /opt/stage/ /
 
-# Ensure pkg-config can see .pc files
+# CUDA libs needed for FFmpeg's whisper link test during ./configure
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache \
+    apt-get update && apt-get install -y --no-install-recommends \
+      nvidia-cuda-toolkit nvidia-cuda-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+# Make sure pkg-config can see .pc files everywhere we may have them
 ENV PKG_CONFIG_PATH="/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/local/lib/pkgconfig:/usr/share/pkgconfig"
 ENV PKG_CONFIG="/usr/bin/pkg-config"
 
+# If whisper.pc declares Requires: ggml but ggml.pc is absent, synthesize a matching ggml.pc
 RUN set -euo pipefail && \
     ldconfig && \
     pkg-config --print-errors --modversion whisper && \
@@ -124,27 +132,13 @@ RUN set -euo pipefail && \
     fi && \
     pkg-config --print-errors --exists 'whisper >= 1.7.5'
 
-RUN cat >/tmp/whisper_probe.c <<'EOF'
-#include <whisper.h>
-int main(void) { return 0; }
-EOF
-
-RUN cc $(pkg-config --cflags whisper) /tmp/whisper_probe.c -o /tmp/whisper_probe $(pkg-config --libs whisper) && \
-    /tmp/whisper_probe && \
-    echo "whisper compile/link probe: OK"
-
-#we need the CUDA toolkit to build
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=apt-cache \
-    apt-get update && apt-get install -y --no-install-recommends \
-      nvidia-cuda-toolkit \
- && rm -rf /var/lib/apt/lists/*
-
-
+# Get FFmpeg source
 WORKDIR /build
 ADD https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VER}.tar.xz .
 RUN tar -xf ffmpeg-${FFMPEG_VER}.tar.xz && rm ffmpeg-${FFMPEG_VER}.tar.xz
 WORKDIR /build/ffmpeg-${FFMPEG_VER}
 
+# Configure + build (GnuTLS, redistributable; Vulkan intentionally omitted)
 RUN set -e; \
     PKG_CONFIG_PATH="$PKG_CONFIG_PATH" PKG_CONFIG="$PKG_CONFIG" \
     ./configure --prefix=/usr --enable-version3 --enable-gpl \
@@ -170,27 +164,27 @@ RUN set -e; \
       --enable-runtime-cpudetect --enable-sdl2 --enable-shared \
       --enable-vaapi --enable-whisper --enable-zlib \
     || { echo '--- ffbuild/config.log (tail) ---'; tail -n 200 ffbuild/config.log || true; exit 1; } \
-  && make -j"$(nproc)" && make install && ldconfig
-
+ && make -j"$(nproc)" \
+ && make install \
+ && ldconfig
 
 # ---- Package a minimal, relocatable runtime (flat /opt/ffmpeg/lib + RPATH) ---
+# Exclude large CUDA driver/runtime libs; rely on host NVIDIA runtime via `--gpus all`
 RUN set -euo pipefail \
  && FFMPEG_BIN="$(command -v ffmpeg)" \
  && FFPROBE_BIN="$(command -v ffprobe)" \
  && mkdir -p /opt/ffmpeg/bin /opt/ffmpeg/lib \
  && cp -v "$FFMPEG_BIN" "$FFPROBE_BIN" /opt/ffmpeg/bin/ \
-    # collect libs from both bins; flat copy, dereference symlinks, exclude the ELF interp
  && { ldd "$FFMPEG_BIN"; ldd "$FFPROBE_BIN"; } \
       | awk '/=> \//{print $3} /^\//{print $1}' \
       | grep -vE '/ld-linux[^ ]*\.so' \
       | sort -u \
+      | grep -vE '(libcuda\.so(\.1)?|libcudart\.so|libcublas\.so|libnvrtc\.so|libnvidia-ml\.so)' \
       | xargs -I{} cp -vL {} /opt/ffmpeg/lib/ \
-    # explicitly include whisper/ggml (in case they’re dlopened)
  && for n in libwhisper libggml; do \
       p="$(ldconfig -p | awk -v n="$n" '$1 ~ n {print $4; exit}')" ; \
       [ -n "$p" ] && cp -vL "$p" /opt/ffmpeg/lib/ || true ; \
     done \
-    # strip & set RPATH so bins prefer /opt/ffmpeg/lib
  && strip --strip-unneeded /opt/ffmpeg/bin/* || true \
  && find /opt/ffmpeg/lib -type f -name '*.so*' -exec strip --strip-unneeded {} + || true \
  && patchelf --set-rpath '$ORIGIN/../lib' /opt/ffmpeg/bin/ffmpeg /opt/ffmpeg/bin/ffprobe \
@@ -210,8 +204,8 @@ RUN --mount=type=cache,target=/var/cache/apt \
 COPY --from=builder /tmp/ffmpeg-runtime.tgz /opt/
 RUN tar -C /opt -xzf /opt/ffmpeg-runtime.tgz && rm /opt/ffmpeg-runtime.tgz \
  && ln -s /opt/bin/ffmpeg  /usr/local/bin/ffmpeg \
- && ln -s /opt/bin/ffprobe /usr/local/bin/ffprobe
+ && ln -s /opt/bin/ffprobe /usr/local/bin/ffprobe \
+ && echo "/opt/lib" > /etc/ld.so.conf.d/ffmpeg.conf && ldconfig
 
-RUN echo "/opt/lib" > /etc/ld.so.conf.d/ffmpeg.conf && ldconfig
-# Optional: uncomment to inspect what was built
-# RUN ffmpeg -hide_banner -buildconf | sed -n '1,160p'
+COPY extract_subs.sh /usr/local/bin/extract_subs.sh
+RUN chmod +x /usr/local/bin/extract_subs.sh
