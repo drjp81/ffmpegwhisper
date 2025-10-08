@@ -1,6 +1,4 @@
-Here you go — an updated, ready-to-drop-in `README.md` that reflects the **GnuTLS (redistributable) licensing change** and **no Vulkan**. It also calls out hardware transcoding support and the main features you enabled.
 
----
 
 # FFmpeg 8.0 (GPU + Whisper) — Docker build
 
