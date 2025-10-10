@@ -76,7 +76,7 @@ docker buildx build \
   --build-arg AVS_TAG=v3.7.5 \
   --build-arg WHISPER_TAG=v1.8.0 \
   --build-arg CUDAARCHS=86 \
-  -t ffmpeg-gpu-whisper:8.0 .
+  -t drjp81/ffmpegwhisper:latest.
 ```
 
 ### PowerShell (Windows)
@@ -88,7 +88,7 @@ docker buildx build `
   --build-arg AVS_TAG=v3.7.5 `
   --build-arg WHISPER_TAG=v1.8.0 `
   --build-arg CUDAARCHS=86 `
-  -t ffmpeg-gpu-whisper:8.0 .
+  -t drjp81/ffmpegwhisper:latest.
 ```
 
 ---
@@ -146,7 +146,7 @@ RUN chmod +x /usr/local/bin/extract_subs.sh
 docker run --rm --gpus all \
   -v /path/to/videos:/videos \
   -v /path/to/models:/models \
-  ffmpeg-gpu-whisper:8.0 \
+  drjp81/ffmpegwhisper:latest\
   extract_subs.sh "/videos/Movie (2024).mkv" "/models/ggml-large-v3-turbo.bin"
 ```
 
@@ -156,7 +156,7 @@ docker run --rm --gpus all \
 docker run --rm --gpus all `
   -v "D:\Videos:/videos" `
   -v "D:\Models:/models" `
-  ffmpeg-gpu-whisper:8.0 `
+  drjp81/ffmpegwhisper:latest`
   extract_subs.sh "/videos/Movie (2024).mkv" "/models/ggml-large-v3-turbo.bin"
 ```
 
@@ -173,7 +173,7 @@ docker run --rm --gpus all `
 **Transcode with NVENC (NVIDIA):**
 
 ```bash
-docker run --rm --gpus all -v "$PWD:/work" ffmpeg-gpu-whisper:8.0 \
+docker run --rm --gpus all -v "$PWD:/work" drjp81/ffmpegwhisper:latest\
   ffmpeg -hwaccel cuda -i /work/in.mp4 -c:v h264_nvenc -b:v 5M -c:a aac /work/out.mp4
 ```
 
@@ -181,7 +181,7 @@ docker run --rm --gpus all -v "$PWD:/work" ffmpeg-gpu-whisper:8.0 \
 
 ```bash
 docker run --rm --gpus all \
-  -v "$PWD:/work" -v "$HOME/models:/models" ffmpeg-gpu-whisper:8.0 \
+  -v "$PWD:/work" -v "$HOME/models:/models" drjp81/ffmpegwhisper:latest\
   extract_subs.sh "/work/in.mp3" "/models/ggml-large-v3-turbo.bin"
 ```
 
